@@ -222,7 +222,7 @@ class GMM(nn.Module):
 
 """### UNet for Segmentation"""
 
-class UNet(nn.Module):
+class SegNet(nn.Module):
     """
     UNet-based segmentation network that generates a segmentation mask for the body.
     The input consists of the body image and the warped cloth image, and the output is a binary mask
@@ -239,7 +239,7 @@ class UNet(nn.Module):
         mask (Tensor): Segmentation mask for the body (batch_size, 1, H, W)
     """
     def __init__(self, input_channels=7, output_channels=1):
-        super(UNet, self).__init__()
+        super(SegNet, self).__init__()
 
         # Encoder layers (downsampling path)
         self.encoder = nn.Sequential(
@@ -269,7 +269,7 @@ class UNet(nn.Module):
 
 """### Composition Network"""
 
-class CompositionNetwork(nn.Module):
+class CompNet(nn.Module):
     """
     Composition Network that combines the body image, warped cloth, and segmentation mask
     to produce the final try-on result (person wearing the new cloth).
@@ -286,7 +286,7 @@ class CompositionNetwork(nn.Module):
         output (Tensor): The final composite image (batch_size, 3, H, W)
     """
     def __init__(self):
-        super(CompositionNetwork, self).__init__()
+        super(CompNet, self).__init__()
 
         # Composition layers that combine body image, warped cloth, and mask
         self.network = nn.Sequential(
