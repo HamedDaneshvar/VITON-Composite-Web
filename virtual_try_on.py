@@ -55,9 +55,9 @@ class VITONDataset(Dataset):
         cloth_image = Image.open(cloth_path).convert('RGB')
         cloth_mask = Image.open(cloth_mask_path).convert('L')  # Convert to single-channel grayscale
         body_image = Image.open(image_path).convert('RGB')
-        image_parse = Image.open(image_parse_path).convert('L')  # Convert segmentation mask to single-channel
-        # # if wanna to load image_parse as 3 channel
-        # image_parse = Image.open(image_parse_path).convert('RGB')
+        # image_parse = Image.open(image_parse_path).convert('L')  # Convert segmentation mask to single-channel
+        # if wanna to load image_parse as 3 channel
+        image_parse = Image.open(image_parse_path).convert('RGB')
 
         # Load and parse pose keypoints
         with open(pose_path, 'r') as f:
@@ -70,10 +70,10 @@ class VITONDataset(Dataset):
             cloth_mask = transforms.ToTensor()(cloth_mask)  # Convert mask to tensor
             cloth_mask = (cloth_mask > 0).float()  # Ensure mask values are 0 or 1
             body_image = self.transform(body_image)
-            image_parse = transforms.ToTensor()(image_parse)  # Convert parse mask to tensor
-            image_parse = (image_parse > 0).float()  # Binary segmentation mask
-            # # if wanna to load image_parse as 3 channel
-            # image_parse = self.transform(image_parse)
+            # image_parse = transforms.ToTensor()(image_parse)  # Convert parse mask to tensor
+            # image_parse = (image_parse > 0).float()  # Binary segmentation mask
+            # if wanna to load image_parse as 3 channel
+            image_parse = self.transform(image_parse)
 
         return {
             'cloth_image': cloth_image,
@@ -118,9 +118,9 @@ def show_sample(dataset, idx):
     cloth_image = sample['cloth_image'].permute(1, 2, 0).numpy()  # [C, H, W] to [H, W, C]
     cloth_mask = sample['cloth_mask'].squeeze(0).numpy()  # Remove channel dimension
     body_image = sample['body_image'].permute(1, 2, 0).numpy()  # [C, H, W] to [H, W, C]
-    image_parse = sample['image_parse'].squeeze(0).numpy()  # Remove channel dimension for mask
-    # # if wanna to load image_parse as 3 channel
-    # image_parse = sample['image_parse'].permute(1, 2, 0).numpy()  # [C, H, W] to [H, W, C]
+    # image_parse = sample['image_parse'].squeeze(0).numpy()  # Remove channel dimension for mask
+    # if wanna to load image_parse as 3 channel
+    image_parse = sample['image_parse'].permute(1, 2, 0).numpy()  # [C, H, W] to [H, W, C]
     pose_keypoints = sample['pose_keypoints']  # Pose keypoints are tensors
 
     fig, axs = plt.subplots(1, 4, figsize=(20, 5))
@@ -134,9 +134,9 @@ def show_sample(dataset, idx):
     axs[2].imshow(body_image)
     axs[2].set_title('Body Image')
 
-    axs[3].imshow(image_parse, cmap='gray')
-    # # if wanna to load image_parse as 3 channel
-    # axs[3].imshow(image_parse)
+    # axs[3].imshow(image_parse, cmap='gray')
+    # if wanna to load image_parse as 3 channel
+    axs[3].imshow(image_parse)
     axs[3].set_title('Image Parse')
 
     for ax in axs:
@@ -238,7 +238,7 @@ class SegNet(nn.Module):
     Output:
         mask (Tensor): Segmentation mask for the body (batch_size, 1, H, W)
     """
-    def __init__(self, input_channels=7, output_channels=1):
+    def __init__(self, input_channels=6, output_channels=1):
         super(SegNet, self).__init__()
 
         # Encoder layers (downsampling path)
