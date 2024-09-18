@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# Virtual Try-On
 
 # Install required packages
 !pip install -q torch torchvision
@@ -20,6 +21,8 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Dataset
 
+
+"""## Load Dataset"""
 
 class VITONDataset(Dataset):
     def __init__(self, root_dir, mode='train', transform=None):
@@ -304,3 +307,161 @@ class CompositionNetwork(nn.Module):
         # Pass through the composition network
         output = self.network(input_tensor)
         return output
+
+"""## Training the Virtual Try-On Model
+
+### Loss Functions
+"""
+
+import torch.nn.functional as F
+from torchvision import models
+
+# L1 Loss for warping
+def warp_loss(warped_cloth, target_cloth):
+    """
+    Compute L1 loss between warped cloth and target cloth.
+
+    Args:
+        warped_cloth (Tensor): Warped cloth image from GMM (batch_size, 3, H, W)
+        target_cloth (Tensor): Ground truth cloth image (batch_size, 3, H, W)
+
+    Returns:
+        loss (Tensor): L1 loss value
+    """
+    return F.l1_loss(warped_cloth, target_cloth)
+
+
+# Cross-Entropy Loss for segmentation
+def segmentation_loss(pred_mask, target_mask):
+    """
+    Compute Cross-Entropy loss for segmentation mask.
+
+    Args:
+        pred_mask (Tensor): Predicted segmentation mask (batch_size, 1, H, W)
+        target_mask (Tensor): Ground truth segmentation mask (batch_size, 1, H, W)
+
+    Returns:
+        loss (Tensor): Cross-Entropy loss value
+    """
+    return F.binary_cross_entropy(pred_mask, target_mask)
+
+
+# Perceptual Loss using a pre-trained VGG model
+class PerceptualLoss(nn.Module):
+    """
+    Perceptual loss compares high-level features extracted from a pre-trained VGG model.
+    This helps improve the visual quality of the final composite image.
+
+    Args:
+        None
+    """
+    def __init__(self):
+        super(PerceptualLoss, self).__init__()
+        vgg = models.vgg19(pretrained=True).features[:16].eval()  # Use the first few layers of VGG19
+        for param in vgg.parameters():
+            param.requires_grad = False  # Freeze VGG parameters
+        self.vgg = vgg
+
+    def forward(self, pred_img, target_img):
+        # Normalize the images for VGG
+        pred_img = (pred_img + 1) / 2  # Normalize to [0, 1]
+        target_img = (target_img + 1) / 2
+        features_pred = self.vgg(pred_img)
+        features_target = self.vgg(target_img)
+        perceptual_loss = F.l1_loss(features_pred, features_target)
+        return perceptual_loss
+
+"""### Optimization"""
+
+import torch.optim as optim
+
+# Define the optimizers for each component of the model
+def create_optimizers(gmm, seg_net, comp_net, learning_rate=1e-4):
+    """
+    Create optimizers for each network component (GMM, Segmentation, and Composition networks).
+
+    Args:
+        gmm (nn.Module): GMM network
+        seg_net (nn.Module): Segmentation network
+        comp_net (nn.Module): Composition network
+        learning_rate (float): Learning rate for the optimizers
+
+    Returns:
+        optimizers (tuple): Optimizers for GMM, SegNet, and CompNet
+    """
+    gmm_optimizer = optim.Adam(gmm.parameters(), lr=learning_rate)
+    seg_optimizer = optim.Adam(seg_net.parameters(), lr=learning_rate)
+    comp_optimizer = optim.Adam(comp_net.parameters(), lr=learning_rate)
+
+    return gmm_optimizer, seg_optimizer, comp_optimizer
+
+"""### Training Loop"""
+
+def train_vton(gmm, seg_net, comp_net, dataloader, num_epochs=20, device='cuda'):
+    """
+    Training loop for the Virtual Try-On model.
+
+    Args:
+        gmm (nn.Module): GMM network
+        seg_net (nn.Module): Segmentation network
+        comp_net (nn.Module): Composition network
+        dataloader (DataLoader): DataLoader for training data
+        num_epochs (int): Number of epochs for training
+        device (str): Device to use for training ('cuda' or 'cpu')
+
+    Returns:
+        None
+    """
+    # Move models to the device
+    gmm.to(device)
+    seg_net.to(device)
+    comp_net.to(device)
+
+    # Loss functions
+    perceptual_loss_fn = PerceptualLoss().to(device)
+
+    # Create optimizers
+    gmm_optimizer, seg_optimizer, comp_optimizer = create_optimizers(gmm, seg_net, comp_net)
+
+    for epoch in range(num_epochs):
+        gmm.train()
+        seg_net.train()
+        comp_net.train()
+
+        for batch in dataloader:
+            body_image = batch['body_image'].to(device)
+            cloth_image = batch['cloth_image'].to(device)
+            cloth_mask = batch['cloth_mask'].to(device)
+            image_parse = batch['image_parse'].to(device)
+
+            # Step 1: Warping the cloth with GMM
+            warped_cloth = gmm(body_image, cloth_image)
+            warp_l1 = warp_loss(warped_cloth, cloth_image)
+
+            # Step 2: Generating the segmentation mask
+            seg_input = torch.cat([body_image, warped_cloth], dim=1)  # Concatenate inputs for SegNet
+            pred_mask = seg_net(seg_input)
+            seg_loss = segmentation_loss(pred_mask, cloth_mask)
+
+            # Step 3: Composition of final image
+            comp_input = torch.cat([body_image, warped_cloth, pred_mask], dim=1)
+            composite_img = comp_net(body_image, warped_cloth, pred_mask)
+
+            # Perceptual loss to ensure high visual quality
+            perceptual_loss = perceptual_loss_fn(composite_img, image_parse)
+
+            # Total loss
+            total_loss = warp_l1 + seg_loss + perceptual_loss
+
+            # Backpropagation and optimization
+            gmm_optimizer.zero_grad()
+            seg_optimizer.zero_grad()
+            comp_optimizer.zero_grad()
+
+            total_loss.backward()
+
+            gmm_optimizer.step()
+            seg_optimizer.step()
+            comp_optimizer.step()
+
+        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss.item():.4f}")
