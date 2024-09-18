@@ -479,10 +479,11 @@ def train_vton_and_save(gmm, seg_net, comp_net, dataloader, num_epochs=20, devic
 
     print("Training complete! Models saved in:", save_dir)
 
-"""#### Training loop
+"""#### Training loop"""
 
-We do not run these two cells if we train this model once
-"""
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+""" We do not run these two cells if we train this model once"""
 
 # Instantiate the model components (GMM, SegNet, CompNet)
 gmm = GMM().to(device)
@@ -490,7 +491,7 @@ seg_net = SegNet().to(device)
 comp_net = CompNet().to(device)
 
 # Train the model for the first phase (e.g., 10 epochs)
-train_vton_and_save(gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=10, device='cuda', save_dir='./model_checkpoints')
+train_vton_and_save(gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=10, device=device, save_dir='./model_checkpoints')
 
 """#### Saving Optimizer States"""
 
@@ -532,7 +533,7 @@ seg_optimizer.load_state_dict(checkpoint['seg_optimizer_state_dict'])
 comp_optimizer.load_state_dict(checkpoint['comp_optimizer_state_dict'])
 
 # Continue training for more epochs (e.g., 10 more epochs)
-train_vton_and_save(gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=10, device='cuda', save_dir='./model_checkpoints')
+train_vton_and_save(gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=10, device=device, save_dir='./model_checkpoints')
 
 """## Evaluation and Inference
 
@@ -596,6 +597,9 @@ def evaluate_vton(gmm, seg_net, comp_net, test_loader, device='cuda'):
     print(f"Average Warp Loss: {avg_warp_loss:.4f}")
     print(f"Average Segmentation Loss: {avg_seg_loss:.4f}")
     print(f"Average Perceptual Loss: {avg_perceptual_loss:.4f}")
+
+# Evaluate the model
+evaluate_vton(gmm, seg_net, comp_net, test_loader, device=device)
 
 """### Inference and Visualization"""
 
@@ -664,3 +668,6 @@ def visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=5, 
                 ax.axis('off')
 
             plt.show()
+
+# Visualize results of model
+visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=5, device=device)
