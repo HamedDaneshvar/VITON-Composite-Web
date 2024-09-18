@@ -395,11 +395,14 @@ def create_optimizers(gmm, seg_net, comp_net, learning_rate=1e-4):
 
     return gmm_optimizer, seg_optimizer, comp_optimizer
 
-"""### Training Loop"""
+"""### Training the Model and Saving the Checkpoints"""
 
-def train_vton(gmm, seg_net, comp_net, dataloader, num_epochs=20, device='cuda'):
+import os
+import torch
+
+def train_vton_and_save(gmm, seg_net, comp_net, dataloader, num_epochs=20, device='cuda', save_dir='./model_checkpoints'):
     """
-    Training loop for the Virtual Try-On model.
+    Training loop for the Virtual Try-On model with model saving functionality.
 
     Args:
         gmm (nn.Module): GMM network
@@ -408,10 +411,14 @@ def train_vton(gmm, seg_net, comp_net, dataloader, num_epochs=20, device='cuda')
         dataloader (DataLoader): DataLoader for training data
         num_epochs (int): Number of epochs for training
         device (str): Device to use for training ('cuda' or 'cpu')
+        save_dir (str): Directory to save the trained models
 
     Returns:
         None
     """
+    # Create the save directory if it doesn't exist
+    os.makedirs(save_dir, exist_ok=True)
+
     # Move models to the device
     gmm.to(device)
     seg_net.to(device)
@@ -439,12 +446,11 @@ def train_vton(gmm, seg_net, comp_net, dataloader, num_epochs=20, device='cuda')
             warp_l1 = warp_loss(warped_cloth, cloth_image)
 
             # Step 2: Generating the segmentation mask
-            seg_input = torch.cat([body_image, warped_cloth], dim=1)  # Concatenate inputs for SegNet
+            seg_input = torch.cat([body_image, warped_cloth], dim=1)
             pred_mask = seg_net(seg_input)
             seg_loss = segmentation_loss(pred_mask, cloth_mask)
 
             # Step 3: Composition of final image
-            comp_input = torch.cat([body_image, warped_cloth, pred_mask], dim=1)
             composite_img = comp_net(body_image, warped_cloth, pred_mask)
 
             # Perceptual loss to ensure high visual quality
@@ -465,6 +471,68 @@ def train_vton(gmm, seg_net, comp_net, dataloader, num_epochs=20, device='cuda')
             comp_optimizer.step()
 
         print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss.item():.4f}")
+
+        # Save model checkpoints after each epoch
+        torch.save(gmm.state_dict(), os.path.join(save_dir, f'gmm_epoch_{epoch+1}.pth'))
+        torch.save(seg_net.state_dict(), os.path.join(save_dir, f'seg_net_epoch_{epoch+1}.pth'))
+        torch.save(comp_net.state_dict(), os.path.join(save_dir, f'comp_net_epoch_{epoch+1}.pth'))
+
+    print("Training complete! Models saved in:", save_dir)
+
+"""#### Training loop
+
+We do not run these two cells if we train this model once
+"""
+
+# Instantiate the model components (GMM, SegNet, CompNet)
+gmm = GMM().to(device)
+seg_net = SegNet().to(device)
+comp_net = CompNet().to(device)
+
+# Train the model for the first phase (e.g., 10 epochs)
+train_vton_and_save(gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=10, device='cuda', save_dir='./model_checkpoints')
+
+"""#### Saving Optimizer States"""
+
+# Save model and optimizer state for resuming training later
+torch.save({
+    'epoch': epoch + 1,
+    'gmm_state_dict': gmm.state_dict(),
+    'seg_net_state_dict': seg_net.state_dict(),
+    'comp_net_state_dict': comp_net.state_dict(),
+    'gmm_optimizer_state_dict': gmm_optimizer.state_dict(),
+    'seg_optimizer_state_dict': seg_optimizer.state_dict(),
+    'comp_optimizer_state_dict': comp_optimizer.state_dict(),
+    'loss': total_loss,
+}, os.path.join(save_dir, f'checkpoint_epoch_{epoch+1}.pth'))
+
+"""#### Loading the Model for Future Training"""
+
+# Load the model for further training
+
+# Re-instantiate the model components
+gmm = GMM().to(device)
+seg_net = SegNet().to(device)
+comp_net = CompNet().to(device)
+
+# Load the model checkpoints (from epoch 10)
+gmm.load_state_dict(torch.load('./model_checkpoints/gmm_epoch_10.pth'))
+seg_net.load_state_dict(torch.load('./model_checkpoints/seg_net_epoch_10.pth'))
+comp_net.load_state_dict(torch.load('./model_checkpoints/comp_net_epoch_10.pth'))
+
+# If you want to load optimizer states (assuming you saved them)
+gmm_optimizer = torch.optim.Adam(gmm.parameters(), lr=0.001)  # Ensure optimizers are created first
+seg_optimizer = torch.optim.Adam(seg_net.parameters(), lr=0.001)
+comp_optimizer = torch.optim.Adam(comp_net.parameters(), lr=0.001)
+
+# Load optimizer state if needed:
+checkpoint = torch.load('./model_checkpoints/checkpoint_epoch_10.pth')
+gmm_optimizer.load_state_dict(checkpoint['gmm_optimizer_state_dict'])
+seg_optimizer.load_state_dict(checkpoint['seg_optimizer_state_dict'])
+comp_optimizer.load_state_dict(checkpoint['comp_optimizer_state_dict'])
+
+# Continue training for more epochs (e.g., 10 more epochs)
+train_vton_and_save(gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=10, device='cuda', save_dir='./model_checkpoints')
 
 """## Evaluation and Inference
 
