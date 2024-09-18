@@ -465,3 +465,134 @@ def train_vton(gmm, seg_net, comp_net, dataloader, num_epochs=20, device='cuda')
             comp_optimizer.step()
 
         print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss.item():.4f}")
+
+"""## Evaluation and Inference
+
+### Evaluation Function
+"""
+
+def evaluate_vton(gmm, seg_net, comp_net, test_loader, device='cuda'):
+    """
+    Evaluate the Virtual Try-On model on the test set.
+
+    Args:
+        gmm (nn.Module): GMM network
+        seg_net (nn.Module): Segmentation network
+        comp_net (nn.Module): Composition network
+        test_loader (DataLoader): DataLoader for test data
+        device (str): Device to use for evaluation ('cuda' or 'cpu')
+
+    Returns:
+        None
+    """
+    # Set models to evaluation mode
+    gmm.eval()
+    seg_net.eval()
+    comp_net.eval()
+
+    total_warp_loss = 0.0
+    total_seg_loss = 0.0
+    total_perceptual_loss = 0.0
+    perceptual_loss_fn = PerceptualLoss().to(device)
+
+    with torch.no_grad():
+        for batch in test_loader:
+            body_image = batch['body_image'].to(device)
+            cloth_image = batch['cloth_image'].to(device)
+            cloth_mask = batch['cloth_mask'].to(device)
+            image_parse = batch['image_parse'].to(device)
+
+            # Step 1: Warping the cloth with GMM
+            warped_cloth = gmm(body_image, cloth_image)
+            warp_l1 = warp_loss(warped_cloth, cloth_image)
+            total_warp_loss += warp_l1.item()
+
+            # Step 2: Generating the segmentation mask
+            seg_input = torch.cat([body_image, warped_cloth], dim=1)  # Concatenate inputs for SegNet
+            pred_mask = seg_net(seg_input)
+            seg_loss = segmentation_loss(pred_mask, cloth_mask)
+            total_seg_loss += seg_loss.item()
+
+            # Step 3: Composition of final image
+            composite_img = comp_net(body_image, warped_cloth, pred_mask)
+
+            # Perceptual loss
+            perceptual_loss = perceptual_loss_fn(composite_img, image_parse)
+            total_perceptual_loss += perceptual_loss.item()
+
+        # Calculate average losses over the entire test set
+        avg_warp_loss = total_warp_loss / len(test_loader)
+        avg_seg_loss = total_seg_loss / len(test_loader)
+        avg_perceptual_loss = total_perceptual_loss / len(test_loader)
+
+    print(f"Average Warp Loss: {avg_warp_loss:.4f}")
+    print(f"Average Segmentation Loss: {avg_seg_loss:.4f}")
+    print(f"Average Perceptual Loss: {avg_perceptual_loss:.4f}")
+
+"""### Inference and Visualization"""
+
+def visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=5, device='cuda'):
+    """
+    Perform inference with the trained Virtual Try-On model and visualize the results.
+
+    Args:
+        gmm (nn.Module): GMM network
+        seg_net (nn.Module): Segmentation network
+        comp_net (nn.Module): Composition network
+        test_loader (DataLoader): DataLoader for test data
+        num_examples (int): Number of examples to visualize
+        device (str): Device to use for inference ('cuda' or 'cpu')
+
+    Returns:
+        None
+    """
+    # Set models to evaluation mode
+    gmm.eval()
+    seg_net.eval()
+    comp_net.eval()
+
+    # Get a batch of test data
+    with torch.no_grad():
+        for i, batch in enumerate(test_loader):
+            if i >= num_examples:
+                break
+
+            body_image = batch['body_image'].to(device)
+            cloth_image = batch['cloth_image'].to(device)
+            cloth_mask = batch['cloth_mask'].to(device)
+
+            # Step 1: Warping the cloth with GMM
+            warped_cloth = gmm(body_image, cloth_image)
+
+            # Step 2: Generating the segmentation mask
+            seg_input = torch.cat([body_image, warped_cloth], dim=1)
+            pred_mask = seg_net(seg_input)
+
+            # Step 3: Composition of final image
+            composite_img = comp_net(body_image, warped_cloth, pred_mask)
+
+            # Convert tensors to numpy arrays for visualization
+            body_image_np = body_image.cpu().numpy().transpose(0, 2, 3, 1)
+            cloth_image_np = cloth_image.cpu().numpy().transpose(0, 2, 3, 1)
+            warped_cloth_np = warped_cloth.cpu().numpy().transpose(0, 2, 3, 1)
+            composite_img_np = composite_img.cpu().numpy().transpose(0, 2, 3, 1)
+
+            # Visualize the results
+            fig, axs = plt.subplots(1, 4, figsize=(12, 6))
+
+            axs[0].imshow((body_image_np[0] * 0.5 + 0.5))  # Denormalize to [0, 1]
+            axs[0].set_title('Body Image')
+
+            axs[1].imshow((cloth_image_np[0] * 0.5 + 0.5))  # Denormalize to [0, 1]
+            axs[1].set_title('Original Cloth')
+
+            axs[2].imshow((warped_cloth_np[0] * 0.5 + 0.5))  # Denormalize to [0, 1]
+            axs[2].set_title('Warped Cloth')
+
+            axs[3].imshow((composite_img_np[0] * 0.5 + 0.5))  # Denormalize to [0, 1]
+            axs[3].set_title('Final Try-On')
+
+            for ax in axs:
+                ax.axis('off')
+
+            plt.show()
