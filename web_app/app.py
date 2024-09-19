@@ -1,9 +1,10 @@
 from flask import Flask, render_template, request, redirect, url_for, send_file
+import os
+import io
 from PIL import Image
 import torch
 import torchvision.transforms as transforms
-import io
-import os
+from .models import GMM, SegNet, CompNet
 
 # Define Flask app
 app = Flask(__name__)
