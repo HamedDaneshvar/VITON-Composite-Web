@@ -55,8 +55,6 @@ class VITONDataset(Dataset):
         cloth_image = Image.open(cloth_path).convert('RGB')
         cloth_mask = Image.open(cloth_mask_path).convert('L')  # Convert to single-channel grayscale
         body_image = Image.open(image_path).convert('RGB')
-        # image_parse = Image.open(image_parse_path).convert('L')  # Convert segmentation mask to single-channel
-        # if wanna to load image_parse as 3 channel
         image_parse = Image.open(image_parse_path).convert('RGB')
 
         # Load and parse pose keypoints
@@ -70,9 +68,6 @@ class VITONDataset(Dataset):
             cloth_mask = transforms.ToTensor()(cloth_mask)  # Convert mask to tensor
             cloth_mask = (cloth_mask > 0).float()  # Ensure mask values are 0 or 1
             body_image = self.transform(body_image)
-            # image_parse = transforms.ToTensor()(image_parse)  # Convert parse mask to tensor
-            # image_parse = (image_parse > 0).float()  # Binary segmentation mask
-            # if wanna to load image_parse as 3 channel
             image_parse = self.transform(image_parse)
 
         return {
@@ -118,8 +113,6 @@ def show_sample(dataset, idx):
     cloth_image = sample['cloth_image'].permute(1, 2, 0).numpy()  # [C, H, W] to [H, W, C]
     cloth_mask = sample['cloth_mask'].squeeze(0).numpy()  # Remove channel dimension
     body_image = sample['body_image'].permute(1, 2, 0).numpy()  # [C, H, W] to [H, W, C]
-    # image_parse = sample['image_parse'].squeeze(0).numpy()  # Remove channel dimension for mask
-    # if wanna to load image_parse as 3 channel
     image_parse = sample['image_parse'].permute(1, 2, 0).numpy()  # [C, H, W] to [H, W, C]
     pose_keypoints = sample['pose_keypoints']  # Pose keypoints are tensors
 
@@ -134,8 +127,6 @@ def show_sample(dataset, idx):
     axs[2].imshow(body_image)
     axs[2].set_title('Body Image')
 
-    # axs[3].imshow(image_parse, cmap='gray')
-    # if wanna to load image_parse as 3 channel
     axs[3].imshow(image_parse)
     axs[3].set_title('Image Parse')
 
@@ -461,7 +452,7 @@ def train_vton_and_save(gmm, seg_net, comp_net, dataloader, num_epochs=20, devic
             composite_img = comp_net(body_image, warped_cloth, pred_mask)
 
             # Perceptual loss to ensure high visual quality
-            perceptual_loss = perceptual_loss_fn(composite_img, image_parse)
+            perceptual_loss = perceptual_loss_fn(composite_img, body_image)
 
             # Total loss
             total_loss = warp_l1 + seg_loss + perceptual_loss
@@ -533,6 +524,8 @@ torch.save({
 #### Loading the Model for Future Training
 """
 
+epoch = 1
+
 # Re-instantiate the model components
 gmm = GMM().to(device)
 seg_net = SegNet().to(device)
@@ -579,6 +572,24 @@ torch.save({
     'comp_optimizer_state_dict': comp_optimizer.state_dict(),
     'loss': final_total_loss,
 }, os.path.join('./model_checkpoints', f'checkpoint_epoch_{epoch}.pth'))
+
+def delete_files(start_num, end_num, directory, name, ext):
+    for filename in os.listdir(directory):
+        if filename.startswith(name) and filename.endswith(ext):
+            file_num = int(filename.replace(ext, '').split('_')[-1])
+            if start_num <= file_num <= end_num:
+                file_path = os.path.join(directory, filename)
+                os.remove(file_path)
+                print(f"Deleted: {file_path}")
+
+start_number = 1
+end_number = 8
+target_directory = "./model_checkpoints"
+ext = ".pth"
+
+delete_files(start_number, end_number, target_directory, "comp_net_epoch_", ext)
+delete_files(start_number, end_number, target_directory, "gmm_epoch_", ext)
+delete_files(start_number, end_number, target_directory, "seg_net_epoch_", ext)
 
 import zipfile
 import shutil
@@ -729,4 +740,5 @@ def visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=5, 
             plt.show()
 
 # Visualize results of model
-visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=5, device=device)
+visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=3, device=device)
+
