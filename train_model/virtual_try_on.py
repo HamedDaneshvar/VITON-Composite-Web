@@ -3,6 +3,9 @@
 
 # Virtual Try-On
 
+from google.colab import drive
+drive.mount('/content/drive')
+
 # Install required packages
 !pip install -q torch torchvision
 !pip install -q opencv-python
@@ -21,6 +24,22 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Dataset
 
+# Copy dataset from drive and extract it
+!cp drive/MyDrive/viton_resize.tar.gz viton_resize.tar.gz
+!tar -xzf viton_resize.tar.gz
+
+# Checking that the dataset has been successfully extracted
+!ls -lh viton_resize/train/cloth | wc -l
+!ls -lh viton_resize/train/cloth-mask | wc -l
+!ls -lh viton_resize/train/image | wc -l
+!ls -lh viton_resize/train/image-parse | wc -l
+!ls -lh viton_resize/train/pose | wc -l
+
+!ls -lh viton_resize/test/cloth | wc -l
+!ls -lh viton_resize/test/cloth-mask | wc -l
+!ls -lh viton_resize/test/image | wc -l
+!ls -lh viton_resize/test/image-parse | wc -l
+!ls -lh viton_resize/test/pose | wc -l
 
 """## Load Dataset"""
 
@@ -741,4 +760,3 @@ def visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=5, 
 
 # Visualize results of model
 visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=3, device=device)
-
