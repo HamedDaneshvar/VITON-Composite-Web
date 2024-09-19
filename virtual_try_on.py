@@ -414,7 +414,8 @@ def train_vton_and_save(gmm, seg_net, comp_net, dataloader, num_epochs=20, devic
         save_dir (str): Directory to save the trained models
 
     Returns:
-        None
+        tuple: Trained models (gmm, seg_net, comp_net), optimizers (gmm_optimizer, seg_optimizer, comp_optimizer),
+               and the total loss from the last epoch.
     """
     # Create the save directory if it doesn't exist
     os.makedirs(save_dir, exist_ok=True)
@@ -430,10 +431,16 @@ def train_vton_and_save(gmm, seg_net, comp_net, dataloader, num_epochs=20, devic
     # Create optimizers
     gmm_optimizer, seg_optimizer, comp_optimizer = create_optimizers(gmm, seg_net, comp_net)
 
+    # Variable to store the total loss of the last epoch
+    final_total_loss = None
+
     for epoch in range(num_epochs):
         gmm.train()
         seg_net.train()
         comp_net.train()
+
+        # Accumulate total loss for the epoch
+        epoch_total_loss = 0.0
 
         for batch in dataloader:
             body_image = batch['body_image'].to(device)
@@ -459,6 +466,9 @@ def train_vton_and_save(gmm, seg_net, comp_net, dataloader, num_epochs=20, devic
             # Total loss
             total_loss = warp_l1 + seg_loss + perceptual_loss
 
+            # Accumulate loss for the epoch
+            epoch_total_loss += total_loss.item()
+
             # Backpropagation and optimization
             gmm_optimizer.zero_grad()
             seg_optimizer.zero_grad()
@@ -470,7 +480,9 @@ def train_vton_and_save(gmm, seg_net, comp_net, dataloader, num_epochs=20, devic
             seg_optimizer.step()
             comp_optimizer.step()
 
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss.item():.4f}")
+        # Compute the average loss for the epoch
+        final_total_loss = epoch_total_loss / len(dataloader)
+        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {final_total_loss:.4f}")
 
         # Save model checkpoints after each epoch
         torch.save(gmm.state_dict(), os.path.join(save_dir, f'gmm_epoch_{epoch+1}.pth'))
@@ -478,62 +490,109 @@ def train_vton_and_save(gmm, seg_net, comp_net, dataloader, num_epochs=20, devic
         torch.save(comp_net.state_dict(), os.path.join(save_dir, f'comp_net_epoch_{epoch+1}.pth'))
 
     print("Training complete! Models saved in:", save_dir)
+    return gmm, seg_net, comp_net, gmm_optimizer, seg_optimizer, comp_optimizer, final_total_loss
 
 """#### Training loop"""
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-""" We do not run these two cells if we train this model once"""
+"""We do not run these cells if we train this model once
+
+Run these cells for first time traing model
+"""
 
 # Instantiate the model components (GMM, SegNet, CompNet)
 gmm = GMM().to(device)
 seg_net = SegNet().to(device)
 comp_net = CompNet().to(device)
 
-# Train the model for the first phase (e.g., 10 epochs)
-train_vton_and_save(gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=10, device=device, save_dir='./model_checkpoints')
+# Train the model for the first phase (e.g., 10 epoch)
+gmm, seg_net, comp_net, gmm_optimizer, seg_optimizer, comp_optimizer, final_total_loss = train_vton_and_save(
+    gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=1, device=device, save_dir='./model_checkpoints'
+)
+
+print(f"Final total loss after training: {final_total_loss:.4f}")
 
 """#### Saving Optimizer States"""
 
 # Save model and optimizer state for resuming training later
+epoch = 1
 torch.save({
-    'epoch': epoch + 1,
+    'epoch': epoch,
     'gmm_state_dict': gmm.state_dict(),
     'seg_net_state_dict': seg_net.state_dict(),
     'comp_net_state_dict': comp_net.state_dict(),
     'gmm_optimizer_state_dict': gmm_optimizer.state_dict(),
     'seg_optimizer_state_dict': seg_optimizer.state_dict(),
     'comp_optimizer_state_dict': comp_optimizer.state_dict(),
-    'loss': total_loss,
-}, os.path.join(save_dir, f'checkpoint_epoch_{epoch+1}.pth'))
+    'loss': final_total_loss,
+}, os.path.join('./model_checkpoints', f'checkpoint_epoch_{epoch}.pth'))
 
-"""#### Loading the Model for Future Training"""
+"""End of first time traing model
 
-# Load the model for further training
+#### Loading the Model for Future Training
+"""
 
 # Re-instantiate the model components
 gmm = GMM().to(device)
 seg_net = SegNet().to(device)
 comp_net = CompNet().to(device)
 
-# Load the model checkpoints (from epoch 10)
-gmm.load_state_dict(torch.load('./model_checkpoints/gmm_epoch_10.pth'))
-seg_net.load_state_dict(torch.load('./model_checkpoints/seg_net_epoch_10.pth'))
-comp_net.load_state_dict(torch.load('./model_checkpoints/comp_net_epoch_10.pth'))
+# Load the saved checkpoint
+checkpoint = torch.load(f'./model_checkpoints/checkpoint_epoch_{epoch}.pth')
 
-# If you want to load optimizer states (assuming you saved them)
-gmm_optimizer = torch.optim.Adam(gmm.parameters(), lr=0.001)  # Ensure optimizers are created first
+# Load model states
+gmm.load_state_dict(checkpoint['gmm_state_dict'])
+seg_net.load_state_dict(checkpoint['seg_net_state_dict'])
+comp_net.load_state_dict(checkpoint['comp_net_state_dict'])
+
+# Recreate the optimizers
+gmm_optimizer = torch.optim.Adam(gmm.parameters(), lr=0.001)
 seg_optimizer = torch.optim.Adam(seg_net.parameters(), lr=0.001)
 comp_optimizer = torch.optim.Adam(comp_net.parameters(), lr=0.001)
 
-# Load optimizer state if needed:
-checkpoint = torch.load('./model_checkpoints/checkpoint_epoch_10.pth')
+# Load optimizer states
 gmm_optimizer.load_state_dict(checkpoint['gmm_optimizer_state_dict'])
 seg_optimizer.load_state_dict(checkpoint['seg_optimizer_state_dict'])
 comp_optimizer.load_state_dict(checkpoint['comp_optimizer_state_dict'])
 
-# Continue training for more epochs (e.g., 10 more epochs)
-train_vton_and_save(gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=10, device=device, save_dir='./model_checkpoints')
+# Set the model to the correct epoch
+start_epoch = checkpoint['epoch']
+print(f"Resuming training from epoch {start_epoch}")
+
+# Continue training from the loaded state for more epochs (e.g., 10 more epochs)
+gmm, seg_net, comp_net, gmm_optimizer, seg_optimizer, comp_optimizer, final_total_loss = train_vton_and_save(
+    gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=9, device=device, save_dir='./model_checkpoints'
+)
+
+print(f"Final total loss after training: {final_total_loss:.4f}")
+
+# Save model and optimizer state for resuming training later
+epoch = 10
+torch.save({
+    'epoch': epoch,
+    'gmm_state_dict': gmm.state_dict(),
+    'seg_net_state_dict': seg_net.state_dict(),
+    'comp_net_state_dict': comp_net.state_dict(),
+    'gmm_optimizer_state_dict': gmm_optimizer.state_dict(),
+    'seg_optimizer_state_dict': seg_optimizer.state_dict(),
+    'comp_optimizer_state_dict': comp_optimizer.state_dict(),
+    'loss': final_total_loss,
+}, os.path.join('./model_checkpoints', f'checkpoint_epoch_{epoch}.pth'))
+
+import zipfile
+import shutil
+
+def zip_directory(directory_path, zip_file_path):
+    with zipfile.ZipFile(zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, _, files in os.walk(directory_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                arcname = os.path.relpath(file_path, os.path.dirname(directory_path))
+                zipf.write(file_path, arcname)
+
+zip_directory('./model_checkpoints', 'model_checkpoints.zip')
+shutil.copy('model_checkpoints.zip', 'drive/MyDrive/model_checkpoints.zip')
 
 """## Evaluation and Inference
 
