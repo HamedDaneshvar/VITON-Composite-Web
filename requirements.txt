@@ -1,0 +1,7 @@
+numpy~=1.26.4
+pillow~=10.4.0
+matplotlib~=3.7.1
+torch~=2.4.1+cu121
+torchvision~=0.19.1+cu121
+opencv-python~=4.10.0.84
+Flask~=3.0.0
