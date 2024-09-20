@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 # Copy dataset from drive and extract it
 !cp drive/MyDrive/viton_resize.tar.gz viton_resize.tar.gz
@@ -97,7 +97,7 @@ class VITONDataset(Dataset):
             'pose_keypoints': pose_keypoints
         }
 
-# Prepare the DataLoader and Transformations
+# Prepare the Transformations
 # Define transformations
 transform = transforms.Compose([
     transforms.Resize((256, 192)),
@@ -105,6 +105,9 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
+"""### Load ALL of Dataset"""
+
+# Prepare the DataLoader
 # Create dataset and dataloader
 viton_dataset_path = './viton_resize'
 
@@ -113,6 +116,37 @@ train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
 
 test_dataset = VITONDataset(root_dir=viton_dataset_path, mode='test', transform=transform)
 test_loader = DataLoader(test_dataset, batch_size=3, shuffle=True)
+
+"""### Load just 30% of Dataset"""
+
+# Create dataset paths
+viton_dataset_path = './viton_resize'
+
+# Create train dataset and select 30% of it
+train_dataset = VITONDataset(root_dir=viton_dataset_path, mode='train', transform=transform)
+
+# Calculate 30% of the dataset length
+train_size = int(0.3 * len(train_dataset))
+
+# Create a subset of the train dataset using the calculated size
+train_indices = torch.randperm(len(train_dataset))[:train_size]  # Randomly sample indices
+train_subset = Subset(train_dataset, train_indices)
+
+# Create DataLoader for the train subset
+train_loader = DataLoader(train_subset, batch_size=16, shuffle=True)
+
+# Create test dataset and select 30% of it
+test_dataset = VITONDataset(root_dir=viton_dataset_path, mode='test', transform=transform)
+
+# Calculate 30% of the dataset length
+test_size = int(0.3 * len(test_dataset))
+
+# Create a subset of the test dataset using the calculated size
+test_indices = torch.randperm(len(test_dataset))[:test_size]  # Randomly sample indices
+test_subset = Subset(test_dataset, test_indices)
+
+# Create DataLoader for the test subset
+test_loader = DataLoader(test_subset, batch_size=3, shuffle=True)
 
 def debug_dataloader(dataloader):
     for i, batch in enumerate(dataloader):
