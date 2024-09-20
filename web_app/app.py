@@ -17,10 +17,15 @@ gmm = GMM().to(device)
 seg_net = SegNet().to(device)
 comp_net = CompNet().to(device)
 
-# Load saved model weights
-gmm.load_state_dict(torch.load('./model_checkpoints/gmm_epoch_10.pth'))
-seg_net.load_state_dict(torch.load('./model_checkpoints/seg_net_epoch_10.pth'))
-comp_net.load_state_dict(torch.load('./model_checkpoints/comp_net_epoch_10.pth'))
+# Load saved model weights based on GPU available
+if device == 'cuda':
+    gmm.load_state_dict(torch.load('./model_checkpoints/gmm_epoch_10.pth'))
+    seg_net.load_state_dict(torch.load('./model_checkpoints/seg_net_epoch_10.pth'))
+    comp_net.load_state_dict(torch.load('./model_checkpoints/comp_net_epoch_10.pth'))
+elif device == 'cpu':
+    gmm.load_state_dict(torch.load('./model_checkpoints/gmm_epoch_10.pth', map_location=torch.device('cpu')))
+    seg_net.load_state_dict(torch.load('./model_checkpoints/seg_net_epoch_10.pth', map_location=torch.device('cpu')))
+    comp_net.load_state_dict(torch.load('./model_checkpoints/comp_net_epoch_10.pth', map_location=torch.device('cpu')))
 
 # Set models to evaluation mode
 gmm.eval()
@@ -31,6 +36,7 @@ comp_net.eval()
 transform = transforms.Compose([
     transforms.Resize((256, 192)),
     transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
 
