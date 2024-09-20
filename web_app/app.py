@@ -25,20 +25,20 @@ comp_net = CompNet().to(device)
 # Load saved model weights based on GPU available
 if device == 'cuda':
     gmm.load_state_dict(torch.load(
-        './model_checkpoints/gmm_epoch_10.pth'))
+        './model_checkpoints/gmm_epoch_150.pth'))
     seg_net.load_state_dict(torch.load(
-        './model_checkpoints/seg_net_epoch_10.pth'))
+        './model_checkpoints/seg_net_epoch_150.pth'))
     comp_net.load_state_dict(torch.load(
-        './model_checkpoints/comp_net_epoch_10.pth'))
+        './model_checkpoints/comp_net_epoch_150.pth'))
 elif device == 'cpu':
     gmm.load_state_dict(torch.load(
-        './model_checkpoints/gmm_epoch_10.pth',
+        './model_checkpoints/gmm_epoch_150.pth',
         map_location=torch.device('cpu')))
     seg_net.load_state_dict(torch.load(
-        './model_checkpoints/seg_net_epoch_10.pth',
+        './model_checkpoints/seg_net_epoch_150.pth',
         map_location=torch.device('cpu')))
     comp_net.load_state_dict(torch.load(
-        './model_checkpoints/comp_net_epoch_10.pth',
+        './model_checkpoints/comp_net_epoch_150.pth',
         map_location=torch.device('cpu')))
 
 # Set models to evaluation mode
