@@ -103,7 +103,7 @@ By saving and reloading models, our approach enables a seamless workflow for ite
 
 1. **Download Pre-Trained Models**: To run the web application, you need the pre-trained models. Download the models from the Google Drive link below, unzip them, and place them in the `web_app` directory:
 
-   - **Google Drive Link for Pre-trained Models**: [Download Models](#)
+   - **Google Drive Link for Pre-trained Models**: [Download Models](https://drive.google.com/file/d/1BF4pEZeorm0yfKC_rFeukByvBidm1w27/view?usp=sharing)
 
 2. **Run the Flask App**: Navigate to the `web_app` directory and start the Flask application:
 

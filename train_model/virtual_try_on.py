@@ -575,9 +575,16 @@ torch.save({
 """End of first time traing model
 
 #### Loading the Model for Future Training
+
+Download the model_checkpoints.zip file from [here](https://drive.google.com/file/d/1BF4pEZeorm0yfKC_rFeukByvBidm1w27/view?usp=sharing) with 150 epochs
 """
 
-epoch = 1
+# copy model checkpoints zip file from drive and unzip it
+!cp drive/MyDrive/model_checkpoints.zip ./model_checkpoints.zip
+!unzip model_checkpoints.zip
+
+# set to last epoch number
+epoch = 100
 
 # Re-instantiate the model components
 gmm = GMM().to(device)
@@ -608,13 +615,13 @@ print(f"Resuming training from epoch {start_epoch}")
 
 # Continue training from the loaded state for more epochs (e.g., 10 more epochs)
 gmm, seg_net, comp_net, gmm_optimizer, seg_optimizer, comp_optimizer, final_total_loss = train_vton_and_save(
-    gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=9, device=device, save_dir='./model_checkpoints'
+    gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=50, device=device, save_dir='./model_checkpoints'
 )
 
 print(f"Final total loss after training: {final_total_loss:.4f}")
 
 # Save model and optimizer state for resuming training later
-epoch = 10
+epoch = 150
 torch.save({
     'epoch': epoch,
     'gmm_state_dict': gmm.state_dict(),
@@ -626,6 +633,12 @@ torch.save({
     'loss': final_total_loss,
 }, os.path.join('./model_checkpoints', f'checkpoint_epoch_{epoch}.pth'))
 
+# Check to see list of model checkpoints
+!ls model_checkpoints/
+
+# Remove old model checkpoints files
+!rm -rf model_checkpoints/comp_net_epoch_100.pth	model_checkpoints/gmm_epoch_100.pth model_checkpoints/seg_net_epoch_100.pth
+
 def delete_files(start_num, end_num, directory, name, ext):
     for filename in os.listdir(directory):
         if filename.startswith(name) and filename.endswith(ext):
@@ -636,13 +649,25 @@ def delete_files(start_num, end_num, directory, name, ext):
                 print(f"Deleted: {file_path}")
 
 start_number = 1
-end_number = 8
+end_number = 49
 target_directory = "./model_checkpoints"
 ext = ".pth"
 
 delete_files(start_number, end_number, target_directory, "comp_net_epoch_", ext)
 delete_files(start_number, end_number, target_directory, "gmm_epoch_", ext)
 delete_files(start_number, end_number, target_directory, "seg_net_epoch_", ext)
+
+# Remove unneccesary files
+!rm -rf model_checkpoints.zip
+!rm -rf model_checkpoints/checkpoint_epoch_100.pth
+
+# Rename models based on last epoch
+!mv model_checkpoints/seg_net_epoch_50.pth model_checkpoints/seg_net_epoch_150.pth
+!mv model_checkpoints/comp_net_epoch_50.pth model_checkpoints/comp_net_epoch_150.pth
+!mv model_checkpoints/gmm_epoch_50.pth model_checkpoints/gmm_epoch_150.pth
+
+# Check the list of model checkpoints
+!ls model_checkpoints/
 
 import zipfile
 import shutil
@@ -794,3 +819,72 @@ def visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=5, 
 
 # Visualize results of model
 visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=3, device=device)
+
+"""## Test models for UI"""
+
+# Set models to evaluation mode
+gmm.eval()
+seg_net.eval()
+comp_net.eval()
+
+# Image transformation for preprocessing input images
+transform = transforms.Compose([
+    transforms.Resize((256, 192)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+])
+
+
+def process_images(body_image_pil, cloth_image_pil):
+    """
+    Process the body and cloth images using the loaded models to
+    produce a composite image.
+    """
+    # Preprocess input images
+    body_image = transform(body_image_pil).unsqueeze(0).to(device)
+    cloth_image = transform(cloth_image_pil).unsqueeze(0).to(device)
+
+    # Step 1: Warping the cloth using GMM
+    with torch.no_grad():
+        warped_cloth = gmm(body_image, cloth_image)
+
+    # Step 2: Generating the segmentation mask using SegNet
+    seg_input = torch.cat([body_image, warped_cloth], dim=1)
+    with torch.no_grad():
+        pred_mask = seg_net(seg_input)
+
+    # Step 3: Composing the final image using CompNet
+    with torch.no_grad():
+        composite_img = comp_net(body_image, warped_cloth, pred_mask)
+
+    # Convert the output tensor to PIL image
+    composite_image = composite_img.squeeze(0).cpu().detach()
+    composite_image_pil = transforms.ToPILImage()(composite_image)
+
+    return composite_image_pil
+
+# Open images with PIL
+# Similar body and cloth images
+body_image_pil = Image.open('viton_resize/test/image/000020_0.jpg')
+cloth_image_pil = Image.open('viton_resize/test/cloth/000020_1.jpg')
+
+# Process the images
+processed_image = process_images(body_image_pil, cloth_image_pil)
+
+# Show image
+plt.imshow(processed_image)
+plt.axis("off")
+plt.show()
+
+# Open images with PIL
+# Different body and cloth images
+body_image_pil = Image.open('./viton_resize/test/image/000020_0.jpg')
+cloth_image_pil = Image.open('./viton_resize/test/cloth/000038_1.jpg')
+
+# Process the images
+processed_image = process_images(body_image_pil, cloth_image_pil)
+
+# Show image
+plt.imshow(processed_image)
+plt.axis("off")
+plt.show()
