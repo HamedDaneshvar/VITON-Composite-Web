@@ -67,6 +67,11 @@ Additionally, to manage resources more efficiently, we experimented with using o
 If you need to train the models, you should first locate the **VITON_resize** dataset from the internet, set it up correctly, and then train the models using the scripts provided in the `train_model` directory.
 
 
+### Training Details
+
+The models were trained for 150 epochs using the VITON dataset to achieve optimal results. The training process utilized all available data, ensuring high-quality outputs for the Virtual Try-On system.
+
+
 ### Advantage of Our Training Approach
 
 Our training approach is designed with flexibility and efficiency in mind. The code allows models to be saved at any point during training, and these saved models can be reloaded later to continue training from the exact state where they were left off. This feature is particularly beneficial for:
