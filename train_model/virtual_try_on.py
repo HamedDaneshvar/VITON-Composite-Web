@@ -902,137 +902,178 @@ shutil.copy('model_checkpoints.zip', 'drive/MyDrive/model_checkpoints.zip')
 ### Evaluation Function
 """
 
-def evaluate_vton(gmm, seg_net, comp_net, test_loader, device='cuda'):
+def evaluate_vton(model, dataloader, device, save_dir='./model_checkpoints', checkpoint_file='checkpoint.pth'):
     """
-    Evaluate the Virtual Try-On model on the test set.
+    Function to evaluate the Virtual Try-On model on a validation/test dataset.
 
     Args:
-        gmm (nn.Module): GMM network
-        seg_net (nn.Module): Segmentation network
-        comp_net (nn.Module): Composition network
-        test_loader (DataLoader): DataLoader for test data
-        device (str): Device to use for evaluation ('cuda' or 'cpu')
+        model (VirtualTryOnModel): The virtual try-on model to evaluate.
+        dataloader (DataLoader): DataLoader for the validation/test data.
+        device (str): Device to run the evaluation on ('cuda' or 'cpu').
+        save_dir (str): Directory where the model checkpoint is saved.
+        checkpoint_file (str): Name of the checkpoint file to load for evaluation.
 
     Returns:
-        None
+        evaluation_metrics (dict): A dictionary of evaluation metrics, such as pixel accuracy or loss.
     """
-    # Set models to evaluation mode
-    gmm.eval()
-    seg_net.eval()
-    comp_net.eval()
 
-    total_warp_loss = 0.0
-    total_seg_loss = 0.0
+    # Load the checkpoint (model state only, not optimizers since we're evaluating)
+    checkpoint_path = os.path.join(save_dir, checkpoint_file)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    # Load the model state
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(device)
+    model.eval()  # Set model to evaluation mode (disables dropout, batchnorm, etc.)
+
+    # Initialize metrics for evaluation
+    total_loss = 0.0
+    perceptual_loss_fn = PerceptualLoss().to(device)  # Assume this loss is used
     total_perceptual_loss = 0.0
-    perceptual_loss_fn = PerceptualLoss().to(device)
+    total_batches = 0
 
-    with torch.no_grad():
-        for batch in test_loader:
+    # Loop through the evaluation dataset
+    with torch.no_grad():  # No need to compute gradients during evaluation
+        for batch in dataloader:
             body_image = batch['body_image'].to(device)
             cloth_image = batch['cloth_image'].to(device)
             cloth_mask = batch['cloth_mask'].to(device)
-            image_parse = batch['image_parse'].to(device)
 
-            # Step 1: Warping the cloth with GMM
-            warped_cloth = gmm(body_image, cloth_image)
-            warp_l1 = warp_loss(warped_cloth, cloth_image)
-            total_warp_loss += warp_l1.item()
+            if model.use_keypoints:
+                pose_keypoints = batch['pose_keypoints'].to(device)
+                final_output, warped_cloth, refined_cloth, segmentation_mask = model(
+                    cloth_image, body_image, body_keypoints=pose_keypoints)
+            else:
+                final_output, warped_cloth, refined_cloth, segmentation_mask = model(
+                    cloth_image, body_image)
 
-            # Step 2: Generating the segmentation mask
-            seg_input = torch.cat([body_image, warped_cloth], dim=1)  # Concatenate inputs for SegNet
-            pred_mask = seg_net(seg_input)
-            seg_loss = segmentation_loss(pred_mask, cloth_mask)
-            total_seg_loss += seg_loss.item()
+            # Compute loss or evaluation metrics (replace with your actual evaluation logic)
+            warp_l1_loss = warp_loss(warped_cloth, cloth_image, pose_keypoints if model.use_keypoints else None)
+            seg_loss = segmentation_loss(segmentation_mask, cloth_mask)
+            perceptual_loss = perceptual_loss_fn(final_output, body_image)
 
-            # Step 3: Composition of final image
-            composite_img = comp_net(body_image, warped_cloth, pred_mask)
-
-            # Perceptual loss
-            perceptual_loss = perceptual_loss_fn(composite_img, image_parse)
+            # Combine losses (if you're using a combined loss for evaluation)
+            total_loss += warp_l1_loss.item() + seg_loss.item() + perceptual_loss.item()
             total_perceptual_loss += perceptual_loss.item()
+            total_batches += 1
 
-        # Calculate average losses over the entire test set
-        avg_warp_loss = total_warp_loss / len(test_loader)
-        avg_seg_loss = total_seg_loss / len(test_loader)
-        avg_perceptual_loss = total_perceptual_loss / len(test_loader)
+    # Calculate average loss over all batches
+    avg_loss = total_loss / total_batches if total_batches > 0 else 0
+    avg_perceptual_loss = total_perceptual_loss / total_batches if total_batches > 0 else 0
 
-    print(f"Average Warp Loss: {avg_warp_loss:.4f}")
-    print(f"Average Segmentation Loss: {avg_seg_loss:.4f}")
-    print(f"Average Perceptual Loss: {avg_perceptual_loss:.4f}")
+    # Return evaluation metrics
+    evaluation_metrics = {
+        'average_loss': avg_loss,
+        'average_perceptual_loss': avg_perceptual_loss
+    }
+
+    print(f"Evaluation complete. Average Loss: {avg_loss:.4f}, Perceptual Loss: {avg_perceptual_loss:.4f}")
+    return evaluation_metrics
 
 # Evaluate the model
-evaluate_vton(gmm, seg_net, comp_net, test_loader, device=device)
+evaluation_metrics = evaluate_vton(model, test_loader, device=device)
+print("Evaluation Results:", evaluation_metrics)
 
 """### Inference and Visualization"""
 
-def visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=5, device='cuda'):
+import matplotlib.pyplot as plt
+import torchvision.utils as vutils
+import os
+
+def visualize_vton_results(model, dataloader, device, num_images=5, save_dir='./visualizations', checkpoint_file='checkpoint.pth'):
     """
-    Perform inference with the trained Virtual Try-On model and visualize the results.
+    Visualizes the results of the Virtual Try-On model on a few examples from the validation/test dataset.
 
     Args:
-        gmm (nn.Module): GMM network
-        seg_net (nn.Module): Segmentation network
-        comp_net (nn.Module): Composition network
-        test_loader (DataLoader): DataLoader for test data
-        num_examples (int): Number of examples to visualize
-        device (str): Device to use for inference ('cuda' or 'cpu')
+        model (VirtualTryOnModel): The virtual try-on model to visualize.
+        dataloader (DataLoader): DataLoader for the validation/test data.
+        device (str): Device to run the evaluation on ('cuda' or 'cpu').
+        num_images (int): Number of images to visualize.
+        save_dir (str): Directory where the visualizations will be saved.
+        checkpoint_file (str): Name of the checkpoint file to load for visualization.
 
     Returns:
-        None
+        None: Saves and displays the visualizations.
     """
-    # Set models to evaluation mode
-    gmm.eval()
-    seg_net.eval()
-    comp_net.eval()
 
-    # Get a batch of test data
-    with torch.no_grad():
-        for i, batch in enumerate(test_loader):
-            if i >= num_examples:
-                break
+    # Load the checkpoint (model state only, not optimizers since we're only visualizing)
+    checkpoint_path = os.path.join(save_dir, checkpoint_file)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
 
+    # Load the model state
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(device)
+    model.eval()  # Set model to evaluation mode
+
+    # Create the save directory if it doesn't exist
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Visualize num_images
+    images_visualized = 0
+
+    with torch.no_grad():  # Disable gradient calculation
+        for batch in dataloader:
             body_image = batch['body_image'].to(device)
             cloth_image = batch['cloth_image'].to(device)
-            cloth_mask = batch['cloth_mask'].to(device)
 
-            # Step 1: Warping the cloth with GMM
-            warped_cloth = gmm(body_image, cloth_image)
+            if model.use_keypoints:
+                pose_keypoints = batch['pose_keypoints'].to(device)
+                final_output, warped_cloth, refined_cloth, segmentation_mask = model(
+                    cloth_image, body_image, body_keypoints=pose_keypoints)
+            else:
+                final_output, warped_cloth, refined_cloth, segmentation_mask = model(
+                    cloth_image, body_image)
 
-            # Step 2: Generating the segmentation mask
-            seg_input = torch.cat([body_image, warped_cloth], dim=1)
-            pred_mask = seg_net(seg_input)
+            # Convert tensors to CPU and prepare for visualization
+            body_image = body_image.cpu()
+            cloth_image = cloth_image.cpu()
+            final_output = final_output.cpu()
+            warped_cloth = warped_cloth.cpu()
 
-            # Step 3: Composition of final image
-            composite_img = comp_net(body_image, warped_cloth, pred_mask)
+            # Visualize a grid of input and output images for comparison
+            for i in range(body_image.size(0)):
+                if images_visualized >= num_images:
+                    return  # Stop once we've visualized the required number of images
 
-            # Convert tensors to numpy arrays for visualization
-            body_image_np = body_image.cpu().numpy().transpose(0, 2, 3, 1)
-            cloth_image_np = cloth_image.cpu().numpy().transpose(0, 2, 3, 1)
-            warped_cloth_np = warped_cloth.cpu().numpy().transpose(0, 2, 3, 1)
-            composite_img_np = composite_img.cpu().numpy().transpose(0, 2, 3, 1)
+                # Prepare figure
+                fig, axs = plt.subplots(1, 4, figsize=(15, 5))
+                fig.suptitle(f"Example {images_visualized + 1}", fontsize=16)
 
-            # Visualize the results
-            fig, axs = plt.subplots(1, 4, figsize=(12, 6))
+                # Visualize body image
+                axs[0].imshow(vutils.make_grid(body_image[i], normalize=True, scale_each=True).permute(1, 2, 0))
+                axs[0].set_title('Body Image')
+                axs[0].axis('off')
 
-            axs[0].imshow((body_image_np[0] * 0.5 + 0.5))  # Denormalize to [0, 1]
-            axs[0].set_title('Body Image')
+                # Visualize cloth image
+                axs[1].imshow(vutils.make_grid(cloth_image[i], normalize=True, scale_each=True).permute(1, 2, 0))
+                axs[1].set_title('Cloth Image')
+                axs[1].axis('off')
 
-            axs[1].imshow((cloth_image_np[0] * 0.5 + 0.5))  # Denormalize to [0, 1]
-            axs[1].set_title('Original Cloth')
+                # Visualize warped cloth image
+                axs[2].imshow(vutils.make_grid(warped_cloth[i], normalize=True, scale_each=True).permute(1, 2, 0))
+                axs[2].set_title('Warped Cloth')
+                axs[2].axis('off')
 
-            axs[2].imshow((warped_cloth_np[0] * 0.5 + 0.5))  # Denormalize to [0, 1]
-            axs[2].set_title('Warped Cloth')
+                # Visualize final output (virtual try-on)
+                axs[3].imshow(vutils.make_grid(final_output[i], normalize=True, scale_each=True).permute(1, 2, 0))
+                axs[3].set_title('Final Try-On')
+                axs[3].axis('off')
 
-            axs[3].imshow((composite_img_np[0] * 0.5 + 0.5))  # Denormalize to [0, 1]
-            axs[3].set_title('Final Try-On')
+                # Save the figure
+                plt.savefig(os.path.join(save_dir, f'visualization_{images_visualized + 1}.png'))
 
-            for ax in axs:
-                ax.axis('off')
+                # Show the figure (so it displays in the output)
+                plt.show()
 
-            plt.show()
+                images_visualized += 1
+
+                if images_visualized >= num_images:
+                    break  # Stop if we've visualized enough images
+
+    print(f"Visualizations saved in {save_dir}")
 
 # Visualize results of model
-visualize_vton_results(gmm, seg_net, comp_net, test_loader, num_examples=3, device=device)
+visualize_vton_results(model, test_loader, device=device, num_images=5, save_dir='./model_checkpoints')
 
 """## Test models for UI"""
 
