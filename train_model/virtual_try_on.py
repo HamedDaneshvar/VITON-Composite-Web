@@ -947,7 +947,7 @@ def evaluate_vton(model, dataloader, device, save_dir='./model_checkpoints', che
                 final_output, warped_cloth, refined_cloth, segmentation_mask = model(
                     cloth_image, body_image)
 
-            # Compute loss or evaluation metrics (replace with your actual evaluation logic)
+            # Compute loss or evaluation metrics
             warp_l1_loss = warp_loss(warped_cloth, cloth_image, pose_keypoints if model.use_keypoints else None)
             seg_loss = segmentation_loss(segmentation_mask, cloth_mask)
             perceptual_loss = perceptual_loss_fn(final_output, body_image)
