@@ -14,6 +14,7 @@ drive.mount('/content/drive')
 # Import Libraries
 import os
 import json
+from tqdm import tqdm
 import numpy as np
 import cv2
 from PIL import Image
@@ -199,68 +200,197 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-"""### Geometric Matching Module (GMM)"""
+"""### Geometric Matching Module (GMM) with pose keypoints"""
+
+from torch.nn import Parameter
+from scipy.interpolate import Rbf
+
+class PoseKeypointsExtractor(nn.Module):
+    """
+    PoseKeypointsExtractor: Extracts keypoints from the body image using CNN layers and fully connected layers.
+    """
+    def __init__(self):
+        super(PoseKeypointsExtractor, self).__init__()
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv2d(128, 256, kernel_size=5, stride=2, padding=2)
+
+        # Adjust the size based on the feature map shape after conv layers
+        # The shape before flattening is [batch_size, 256, 32, 24], so:
+        self.fc1 = nn.Linear(256 * 32 * 24, 512)  # Adjusted input size for fc1 layer
+        self.fc2 = nn.Linear(512, 18 * 2)  # 18 keypoints, each with (x, y) coordinates
+
+    def forward(self, x):
+        """
+        Forward pass to extract keypoints from the body image.
+        :param x: Input body image (tensor).
+        :return: Predicted keypoints with shape (batch_size, 18, 2).
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+
+        # Flatten the feature map and adjust the size for the fully connected layer
+        x = x.view(x.size(0), -1)  # Flatten the tensor to (batch_size, features)
+        x = F.relu(self.fc1(x))
+        keypoints = self.fc2(x).view(-1, 18, 2)  # (batch_size, 18 keypoints, 2 coordinates)
+
+        return keypoints
+
+class SpatialTransformerNetwork(nn.Module):
+    """
+    Spatial Transformer Network (STN) that warps the clothing image based on keypoints
+    using a Thin-Plate Spline (TPS) transformation.
+    """
+
+    def __init__(self, num_points=18):
+        """
+        Initialize the SpatialTransformerNetwork.
+
+        Args:
+            num_points (int): Number of keypoints (control points) used for TPS transformation.
+        """
+        super(SpatialTransformerNetwork, self).__init__()
+        self.num_points = num_points
+        # TPS control points are initialized randomly or using some fixed strategy.
+        self.control_points = Parameter(torch.randn(num_points, 2))  # Random control points for cloth image
+
+    def tps_warp(self, src_points, dst_points, cloth_image):
+        """
+        Apply Thin-Plate Spline (TPS) transformation to warp the clothing image based on keypoints.
+
+        Args:
+            src_points (Tensor): Source keypoints on the clothing image (batch_size, num_points, 2).
+            dst_points (Tensor): Destination keypoints from the body image (batch_size, num_points, 2).
+            cloth_image (Tensor): Clothing image to be warped (batch_size, C, H, W).
+
+        Returns:
+            warped_cloth (Tensor): Warped clothing image (batch_size, C, H, W).
+        """
+        batch_size, _, height, width = cloth_image.size()
+
+        # Ensure source and destination points are of the same length
+        if src_points.size(1) != self.num_points or dst_points.size(1) != self.num_points:
+            raise ValueError(f"Expected {self.num_points} points, got {src_points.size(1)} and {dst_points.size(1)}.")
+
+        # Convert PyTorch tensors to numpy arrays for RBF interpolation
+        src_points_np = src_points.detach().cpu().numpy()  # Clothing keypoints (detached from computation graph)
+        dst_points_np = dst_points.detach().cpu().numpy()  # Body keypoints (detached from computation graph)
+
+        warped_images = []
+
+        for i in range(batch_size):
+            # Create meshgrid for the image (pixel coordinates)
+            grid_x, grid_y = np.meshgrid(np.arange(width), np.arange(height))
+            flat_grid = np.vstack([grid_x.flatten(), grid_y.flatten()]).T
+
+            # Add small noise to avoid singular matrix error
+            epsilon = 1e-5
+            dst_points_np[i] += epsilon * np.random.randn(*dst_points_np[i].shape)
+
+            # Apply TPS using Rbf (Radial Basis Function) with smooth regularization to avoid singular matrix
+            rbf_x = Rbf(dst_points_np[i, :, 0], dst_points_np[i, :, 1], src_points_np[i, :, 0], function='thin_plate', smooth=epsilon)
+            rbf_y = Rbf(dst_points_np[i, :, 0], dst_points_np[i, :, 1], src_points_np[i, :, 1], function='thin_plate', smooth=epsilon)
+
+            warped_grid_x = rbf_x(flat_grid[:, 0], flat_grid[:, 1])
+            warped_grid_y = rbf_y(flat_grid[:, 0], flat_grid[:, 1])
+
+            warped_grid_x = np.clip(warped_grid_x, 0, width - 1).reshape(height, width)
+            warped_grid_y = np.clip(warped_grid_y, 0, height - 1).reshape(height, width)
+
+            # Warp each channel of the clothing image using bilinear interpolation
+            warped_image = np.zeros_like(cloth_image[i].cpu().numpy())
+
+            for c in range(cloth_image.size(1)):  # For each color channel
+                warped_image[c] = self.bilinear_interpolate(cloth_image[i, c].cpu().numpy(), warped_grid_x, warped_grid_y)
+
+            warped_images.append(warped_image)
+
+        # Convert warped images back to a PyTorch tensor
+        warped_images = torch.tensor(warped_images).float().to(cloth_image.device)
+
+        return warped_images
+
+    @staticmethod
+    def bilinear_interpolate(im, x, y):
+        """
+        Bilinear interpolation to sample pixel values from the original image.
+
+        Args:
+            im (ndarray): Original image (H, W).
+            x (ndarray): X-coordinates of the grid to sample from.
+            y (ndarray): Y-coordinates of the grid to sample from.
+
+        Returns:
+            ndarray: Warped image based on the interpolated pixel values.
+        """
+        x0 = np.floor(x).astype(int)
+        x1 = x0 + 1
+        y0 = np.floor(y).astype(int)
+        y1 = y0 + 1
+
+        x0 = np.clip(x0, 0, im.shape[1] - 1)
+        x1 = np.clip(x1, 0, im.shape[1] - 1)
+        y0 = np.clip(y0, 0, im.shape[0] - 1)
+        y1 = np.clip(y1, 0, im.shape[0] - 1)
+
+        Ia = im[y0, x0]
+        Ib = im[y1, x0]
+        Ic = im[y0, x1]
+        Id = im[y1, x1]
+
+        wa = (x1 - x) * (y1 - y)
+        wb = (x1 - x) * (y - y0)
+        wc = (x - x0) * (y1 - y)
+        wd = (x - x0) * (y - y0)
+
+        return wa * Ia + wb * Ib + wc * Ic + wd * Id
+
+    def forward(self, cloth_image, keypoints):
+        """
+        Forward pass for the STN.
+
+        Args:
+            cloth_image (Tensor): Input clothing image (batch_size, C, H, W).
+            keypoints (Tensor): Destination keypoints from the body image (batch_size, num_points, 2).
+
+        Returns:
+            warped_cloth (Tensor): Warped clothing image.
+        """
+        # Source points for the cloth: control points initialized or learned
+        src_points = self.control_points.unsqueeze(0).repeat(cloth_image.size(0), 1, 1).to(cloth_image.device)
+        dst_points = keypoints
+
+        # Perform TPS warping
+        warped_cloth = self.tps_warp(src_points, dst_points, cloth_image)
+
+        return warped_cloth
 
 class GMM(nn.Module):
     """
-    Geometric Matching Module (GMM) that warps the cloth image to match the body image
-    using a Spatial Transformer Network (STN) with Thin-Plate Spline (TPS) transformation.
+    GMM: Geometric Matching Module that warps the clothing image based
+    on pose keypoints.
 
-    Args:
-        None
-
-    Input:
-        body_image (Tensor): The body image of the person (batch_size, 3, H, W)
-        cloth_image (Tensor): The cloth image to be warped (batch_size, 3, H, W)
-
-    Output:
-        warped_cloth (Tensor): The cloth image warped to fit the body (batch_size, 3, H, W)
+    The module uses a Spatial Transformer Network (STN) to warp the clothing
+    image according to the body pose represented by keypoints.
     """
     def __init__(self):
         super(GMM, self).__init__()
+        self.stn = SpatialTransformerNetwork()
 
-        # Feature extraction layers for body and cloth images
-        # Shared convolutional layers for both inputs
-        self.extraction = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=7, stride=1, padding=3),  # Output: (batch_size, 64, H, W)
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # Downsample
-            nn.Conv2d(64, 128, kernel_size=5, stride=1, padding=2),  # Output: (batch_size, 128, H/2, W/2)
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # Downsample
-            nn.Conv2d(128, 256, kernel_size=5, stride=1, padding=2),  # Output: (batch_size, 256, H/4, W/4)
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2)  # Downsample
-        )
+    def forward(self, cloth_image, body_image):
+        """
+        Forward pass for GMM.
+        :param cloth_image: Clothing image tensor.
+        :param body_image: Body image tensor.
+        :return: Warped clothing image tensor.
+        """
+        # Step 1: Extract keypoints from the body image
+        keypoints_extractor = PoseKeypointsExtractor().to(next(self.parameters()).device)
+        body_keypoints = keypoints_extractor(body_image)
 
-        # Thin-Plate Spline (TPS) transformation module
-        # Fully connected layers to predict affine transformation matrix
-        self.tps = nn.Sequential(
-            nn.Linear(256 * 32 * 24, 512),  # Input size depends on the image size and feature map size
-            nn.ReLU(),
-            nn.Linear(512, 6)  # Predicts 6 parameters for affine transformation
-        )
-
-    def forward(self, body_image, cloth_image):
-        # Extract features from body and cloth images
-        body_features = self.extraction(body_image)
-        cloth_features = self.extraction(cloth_image)
-
-        # Flatten the feature maps to feed into the fully connected layers
-        body_flatten = body_features.view(body_features.size(0), -1)
-        cloth_flatten = cloth_features.view(cloth_features.size(0), -1)
-
-        # Predict transformation matrix (theta)
-        theta = self.tps(body_flatten)
-
-        # Reshape theta to a 2x3 affine transformation matrix
-        theta = theta.view(-1, 2, 3)
-
-        # Create a grid for warping the cloth image
-        grid = F.affine_grid(theta, cloth_image.size())
-
-        # Warp the cloth image using the grid
-        warped_cloth = F.grid_sample(cloth_image, grid)
+        # Step 2: Use the keypoints in the STN to warp the clothing image
+        warped_cloth = self.stn(cloth_image, body_keypoints)
 
         return warped_cloth
 
@@ -280,7 +410,7 @@ class SegNet(nn.Module):
         x (Tensor): Concatenated input tensor of the body image and warped cloth (batch_size, input_channels, H, W)
 
     Output:
-        mask (Tensor): Segmentation mask for the body (batch_size, 1, H, W)
+        mask (Tensor): Segmentation mask for the body (batch_size, 1, H, W), values between 0 and 1
     """
     def __init__(self, input_channels=6, output_channels=1):
         super(SegNet, self).__init__()
@@ -302,14 +432,14 @@ class SegNet(nn.Module):
             nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),  # (batch_size, 64, H/2, W/2)
             nn.ReLU(),
             nn.ConvTranspose2d(64, output_channels, kernel_size=4, stride=2, padding=1),  # (batch_size, 1, H, W)
-            nn.Sigmoid()  # Sigmoid to normalize output to [0, 1] for mask
+            nn.Sigmoid()  # Sigmoid ensures output is in range [0, 1]
         )
 
     def forward(self, x):
         # Pass input through encoder and decoder
         x = self.encoder(x)
         x = self.decoder(x)
-        return x
+        return x  # Final output is already sigmoid-activated
 
 """### Composition Network"""
 
@@ -352,6 +482,42 @@ class CompNet(nn.Module):
         output = self.network(input_tensor)
         return output
 
+"""## Virtual Try-on Model"""
+
+class VirtualTryOnModel(nn.Module):
+    """
+    Virtual Try-On model using pose keypoints for training and predicted keypoints for inference.
+    """
+    def __init__(self, use_keypoints=True):
+        super(VirtualTryOnModel, self).__init__()
+        self.use_keypoints = use_keypoints
+        self.tps_net = SpatialTransformerNetwork()
+        self.gmm = GMM()  # GMM includes the Spatial Transformer Network
+        self.segnet = SegNet()
+        self.compnet = CompNet()
+        if not self.use_keypoints:
+            self.keypoint_predictor = PoseKeypointsExtractor()  # Predicts keypoints during inference
+            self.keypoint_predictor.to(next(self.parameters()).device)
+
+    def forward(self, cloth_image, body_image, body_keypoints=None):
+        """
+        Forward pass: uses keypoints for training and predicts keypoints during inference.
+        """
+        if self.use_keypoints:
+            # Training: Use provided keypoints
+            warped_cloth = self.tps_net(cloth_image, body_keypoints)
+        else:
+            # Inference: Predict keypoints
+            predicted_keypoints = self.keypoint_predictor(body_image)
+            warped_cloth = self.tps_net(cloth_image, predicted_keypoints)
+
+        refined_cloth = self.gmm(body_image, warped_cloth)
+        seg_input = torch.cat([body_image, refined_cloth], dim=1)
+        segmentation_mask = self.segnet(seg_input)
+        final_output = self.compnet(body_image, refined_cloth, segmentation_mask)
+
+        return final_output, warped_cloth, refined_cloth, segmentation_mask
+
 """## Training the Virtual Try-On Model
 
 ### Loss Functions
@@ -361,18 +527,15 @@ import torch.nn.functional as F
 from torchvision import models
 
 # L1 Loss for warping
-def warp_loss(warped_cloth, target_cloth):
-    """
-    Compute L1 loss between warped cloth and target cloth.
-
-    Args:
-        warped_cloth (Tensor): Warped cloth image from GMM (batch_size, 3, H, W)
-        target_cloth (Tensor): Ground truth cloth image (batch_size, 3, H, W)
-
-    Returns:
-        loss (Tensor): L1 loss value
-    """
-    return F.l1_loss(warped_cloth, target_cloth)
+# During inference, keypoint_loss is not included
+def warp_loss(warped_cloth, target_cloth, body_keypoints=None, predicted_keypoints=None):
+    l1_loss = F.l1_loss(warped_cloth, target_cloth)
+    if body_keypoints is not None and predicted_keypoints is not None:
+        keypoint_loss = F.mse_loss(predicted_keypoints, body_keypoints)
+        total_loss = l1_loss + keypoint_loss
+    else:
+        total_loss = l1_loss  # Inference mode only uses L1 loss
+    return total_loss
 
 
 # Cross-Entropy Loss for segmentation
@@ -388,6 +551,17 @@ def segmentation_loss(pred_mask, target_mask):
         loss (Tensor): Cross-Entropy loss value
     """
     return F.binary_cross_entropy(pred_mask, target_mask)
+
+
+def keypoint_loss(predicted_keypoints, target_keypoints):
+    """
+    Calculates the keypoint prediction loss (L2 loss).
+
+    :param predicted_keypoints: Predicted keypoints from the KeypointPredictor.
+    :param target_keypoints: Ground truth keypoints.
+    :return: Keypoint prediction loss.
+    """
+    return F.mse_loss(predicted_keypoints, target_keypoints)
 
 
 # Perceptual Loss using a pre-trained VGG model
@@ -415,126 +589,140 @@ class PerceptualLoss(nn.Module):
         perceptual_loss = F.l1_loss(features_pred, features_target)
         return perceptual_loss
 
+
+def compute_total_loss(warp_l1, seg_loss, perceptual_loss, keypoint_loss=None):
+    """
+    Combines individual losses to compute the total loss.
+
+    :param warp_l1: Warp L1 loss from GMM.
+    :param seg_loss: Segmentation loss from SegNet.
+    :param perceptual_loss: Perceptual loss for image quality.
+    :param keypoint_loss: (Optional) Keypoint loss, used only during training keypoint prediction.
+    :return: Total loss.
+    """
+    total_loss = warp_l1 + seg_loss + perceptual_loss
+
+    if keypoint_loss is not None:
+        total_loss += keypoint_loss
+
+    return total_loss
+
 """### Optimization"""
 
 import torch.optim as optim
 
 # Define the optimizers for each component of the model
-def create_optimizers(gmm, seg_net, comp_net, learning_rate=1e-4):
+def create_optimizers(model, lr=0.001):
     """
-    Create optimizers for each network component (GMM, Segmentation, and Composition networks).
+    Creates optimizers for the different components of the VirtualTryOnModel.
 
     Args:
-        gmm (nn.Module): GMM network
-        seg_net (nn.Module): Segmentation network
-        comp_net (nn.Module): Composition network
-        learning_rate (float): Learning rate for the optimizers
+        model: The VirtualTryOnModel instance.
+        lr: Learning rate for the optimizers.
 
     Returns:
-        optimizers (tuple): Optimizers for GMM, SegNet, and CompNet
+        A dictionary of optimizers for each component of the model.
     """
-    gmm_optimizer = optim.Adam(gmm.parameters(), lr=learning_rate)
-    seg_optimizer = optim.Adam(seg_net.parameters(), lr=learning_rate)
-    comp_optimizer = optim.Adam(comp_net.parameters(), lr=learning_rate)
-
-    return gmm_optimizer, seg_optimizer, comp_optimizer
+    optimizers = {
+        'gmm': torch.optim.Adam(model.gmm.parameters(), lr=lr),
+        'seg_net': torch.optim.Adam(model.segnet.parameters(), lr=lr),
+        'comp_net': torch.optim.Adam(model.compnet.parameters(), lr=lr),
+        'tps_net': torch.optim.Adam(model.tps_net.parameters(), lr=lr)
+    }
+    if not model.use_keypoints:
+        optimizers['keypoint_predictor'] = torch.optim.Adam(model.keypoint_predictor.parameters(), lr=lr)
+    return optimizers
 
 """### Training the Model and Saving the Checkpoints"""
 
 import os
 import torch
 
-def train_vton_and_save(gmm, seg_net, comp_net, dataloader, num_epochs=20, device='cuda', save_dir='./model_checkpoints'):
+def train_vton_and_save(model, dataloader, num_epochs=20, device='cuda', save_dir='./model_checkpoints', start_epoch=0):
     """
     Training loop for the Virtual Try-On model with model saving functionality.
 
+    The function trains the model using pose keypoints during training, and ensures the
+    correct handling of the absence of keypoints during inference.
+
     Args:
-        gmm (nn.Module): GMM network
-        seg_net (nn.Module): Segmentation network
-        comp_net (nn.Module): Composition network
-        dataloader (DataLoader): DataLoader for training data
-        num_epochs (int): Number of epochs for training
-        device (str): Device to use for training ('cuda' or 'cpu')
-        save_dir (str): Directory to save the trained models
+        model (VirtualTryOnModel): The virtual try-on model combining GMM, SegNet, and CompNet.
+        dataloader (DataLoader): DataLoader for training data.
+        num_epochs (int): Number of epochs for training.
+        device (str): Device to use for training ('cuda' or 'cpu').
+        save_dir (str): Directory to save the trained models.
+        start_epoch (int): The epoch to resume training from.
 
     Returns:
-        tuple: Trained models (gmm, seg_net, comp_net), optimizers (gmm_optimizer, seg_optimizer, comp_optimizer),
-               and the total loss from the last epoch.
+        tuple: Trained model and optimizer state for resuming training later.
     """
     # Create the save directory if it doesn't exist
     os.makedirs(save_dir, exist_ok=True)
 
-    # Move models to the device
-    gmm.to(device)
-    seg_net.to(device)
-    comp_net.to(device)
+    # Move model to the device
+    model.to(device)
 
     # Loss functions
     perceptual_loss_fn = PerceptualLoss().to(device)
 
     # Create optimizers
-    gmm_optimizer, seg_optimizer, comp_optimizer = create_optimizers(gmm, seg_net, comp_net)
+    optimizers = create_optimizers(model)
 
-    # Variable to store the total loss of the last epoch
     final_total_loss = None
 
-    for epoch in range(num_epochs):
-        gmm.train()
-        seg_net.train()
-        comp_net.train()
+    for epoch in tqdm(range(start_epoch, num_epochs)):
+        model.train()
 
-        # Accumulate total loss for the epoch
-        epoch_total_loss = 0.0
+        epoch_total_loss = 0.0  # Accumulate total loss for the epoch
 
         for batch in dataloader:
             body_image = batch['body_image'].to(device)
             cloth_image = batch['cloth_image'].to(device)
             cloth_mask = batch['cloth_mask'].to(device)
-            image_parse = batch['image_parse'].to(device)
 
-            # Step 1: Warping the cloth with GMM
-            warped_cloth = gmm(body_image, cloth_image)
-            warp_l1 = warp_loss(warped_cloth, cloth_image)
+            if model.use_keypoints:
+                pose_keypoints = batch['pose_keypoints'].to(device)
+                final_output, warped_cloth, refined_cloth, segmentation_mask = model(
+                    cloth_image, body_image, body_keypoints=pose_keypoints)
+            else:
+                final_output, warped_cloth, refined_cloth, segmentation_mask = model(
+                    cloth_image, body_image)
 
-            # Step 2: Generating the segmentation mask
-            seg_input = torch.cat([body_image, warped_cloth], dim=1)
-            pred_mask = seg_net(seg_input)
-            seg_loss = segmentation_loss(pred_mask, cloth_mask)
+            # Loss calculations
+            warp_l1 = warp_loss(warped_cloth, cloth_image, pose_keypoints if model.use_keypoints else None)
 
-            # Step 3: Composition of final image
-            composite_img = comp_net(body_image, warped_cloth, pred_mask)
+            # # Ensure the segmentation_mask is passed through a sigmoid
+            # segmentation_mask = torch.sigmoid(segmentation_mask)
+            # # compute the segmentation loss
+            # seg_loss = segmentation_loss(segmentation_mask.mean(dim=1, keepdim=True), cloth_mask)
 
-            # Perceptual loss to ensure high visual quality
-            perceptual_loss = perceptual_loss_fn(composite_img, body_image)
+            seg_loss = segmentation_loss(segmentation_mask, cloth_mask)
 
-            # Total loss
-            total_loss = warp_l1 + seg_loss + perceptual_loss
+            perceptual_loss = perceptual_loss_fn(final_output, body_image)
 
-            # Accumulate loss for the epoch
+            total_loss = compute_total_loss(warp_l1, seg_loss, perceptual_loss)
+
             epoch_total_loss += total_loss.item()
 
             # Backpropagation and optimization
-            gmm_optimizer.zero_grad()
-            seg_optimizer.zero_grad()
-            comp_optimizer.zero_grad()
+            for optimizer in optimizers.values():
+                optimizer.zero_grad()
 
             total_loss.backward()
 
-            gmm_optimizer.step()
-            seg_optimizer.step()
-            comp_optimizer.step()
+            for optimizer in optimizers.values():
+                optimizer.step()
 
-        # Compute the average loss for the epoch
         final_total_loss = epoch_total_loss / len(dataloader)
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {final_total_loss:.4f}")
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {final_total_loss:.4f}")
 
         # Save model checkpoints after each epoch
-        torch.save(gmm.state_dict(), os.path.join(save_dir, f'gmm_epoch_{epoch+1}.pth'))
-        torch.save(seg_net.state_dict(), os.path.join(save_dir, f'seg_net_epoch_{epoch+1}.pth'))
-        torch.save(comp_net.state_dict(), os.path.join(save_dir, f'comp_net_epoch_{epoch+1}.pth'))
+        torch.save(model.state_dict(), os.path.join(save_dir, f'vton_model_epoch_{epoch + 1}.pth'))
+        torch.save({name: opt.state_dict() for name, opt in optimizers.items()},
+                   os.path.join(save_dir, f'optimizers_epoch_{epoch + 1}.pth'))
 
     print("Training complete! Models saved in:", save_dir)
-    return gmm, seg_net, comp_net, gmm_optimizer, seg_optimizer, comp_optimizer, final_total_loss
+    return model, optimizers, final_total_loss
 
 """#### Training loop"""
 
@@ -545,93 +733,119 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 Run these cells for first time traing model
 """
 
-# Instantiate the model components (GMM, SegNet, CompNet)
-gmm = GMM().to(device)
-seg_net = SegNet().to(device)
-comp_net = CompNet().to(device)
+# Instantiate the model
+model = VirtualTryOnModel().to(device)
 
-# Train the model for the first phase (e.g., 10 epoch)
-gmm, seg_net, comp_net, gmm_optimizer, seg_optimizer, comp_optimizer, final_total_loss = train_vton_and_save(
-    gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=1, device=device, save_dir='./model_checkpoints'
+# Define the number of epochs and other training parameters
+num_epochs = 1
+save_dir = './model_checkpoints'
+
+# Train the model for the first phase (e.g., 20 epoch)
+model, optimizers, final_total_loss = train_vton_and_save(
+    model,
+    dataloader=train_loader,
+    num_epochs=num_epochs,
+    device=device,
+    save_dir=save_dir
 )
 
 print(f"Final total loss after training: {final_total_loss:.4f}")
 
 """#### Saving Optimizer States"""
 
-# Save model and optimizer state for resuming training later
-epoch = 1
-torch.save({
-    'epoch': epoch,
-    'gmm_state_dict': gmm.state_dict(),
-    'seg_net_state_dict': seg_net.state_dict(),
-    'comp_net_state_dict': comp_net.state_dict(),
-    'gmm_optimizer_state_dict': gmm_optimizer.state_dict(),
-    'seg_optimizer_state_dict': seg_optimizer.state_dict(),
-    'comp_optimizer_state_dict': comp_optimizer.state_dict(),
-    'loss': final_total_loss,
-}, os.path.join('./model_checkpoints', f'checkpoint_epoch_{epoch}.pth'))
+# Save the optimizer states for resuming training later
+checkpoint = {
+    'epoch': num_epochs,
+    'model_state_dict': model.state_dict(),
+    'optimizers_state_dict': {name: optimizer.state_dict() for name, optimizer in optimizers.items()},
+    'final_loss': final_total_loss,
+}
+
+# Save the checkpoint
+torch.save(checkpoint, os.path.join(save_dir, 'checkpoint.pth'))
+print(f"Checkpoint saved to {save_dir}/checkpoint.pth")
+
+!ls -alh model_checkpoints/
 
 """End of first time traing model
 
 #### Loading the Model for Future Training
 
-Download the model_checkpoints.zip file from [here](https://drive.google.com/file/d/1BF4pEZeorm0yfKC_rFeukByvBidm1w27/view?usp=sharing) with 150 epochs
+Download the model_checkpoints.zip file from [here]() with 1 epochs
 """
 
 # copy model checkpoints zip file from drive and unzip it
 !cp drive/MyDrive/model_checkpoints.zip ./model_checkpoints.zip
 !unzip model_checkpoints.zip
 
-# set to last epoch number
-epoch = 100
+save_dir = './model_checkpoints'
 
-# Re-instantiate the model components
-gmm = GMM().to(device)
-seg_net = SegNet().to(device)
-comp_net = CompNet().to(device)
+# Load the checkpoint
+checkpoint = torch.load(os.path.join(save_dir, 'checkpoint.pth'))
 
-# Load the saved checkpoint
-checkpoint = torch.load(f'./model_checkpoints/checkpoint_epoch_{epoch}.pth')
+# Instantiate the model again
+model = VirtualTryOnModel().to(device)
 
-# Load model states
-gmm.load_state_dict(checkpoint['gmm_state_dict'])
-seg_net.load_state_dict(checkpoint['seg_net_state_dict'])
-comp_net.load_state_dict(checkpoint['comp_net_state_dict'])
+# Load the model state
+model.load_state_dict(checkpoint['model_state_dict'])
 
-# Recreate the optimizers
-gmm_optimizer = torch.optim.Adam(gmm.parameters(), lr=0.001)
-seg_optimizer = torch.optim.Adam(seg_net.parameters(), lr=0.001)
-comp_optimizer = torch.optim.Adam(comp_net.parameters(), lr=0.001)
+# Create optimizers again
+optimizers = create_optimizers(model)
 
-# Load optimizer states
-gmm_optimizer.load_state_dict(checkpoint['gmm_optimizer_state_dict'])
-seg_optimizer.load_state_dict(checkpoint['seg_optimizer_state_dict'])
-comp_optimizer.load_state_dict(checkpoint['comp_optimizer_state_dict'])
+# Load the optimizer states
+for name, optimizer in optimizers.items():
+    optimizer.load_state_dict(checkpoint['optimizers_state_dict'][name])
 
-# Set the model to the correct epoch
+# Set the epoch to resume training from
 start_epoch = checkpoint['epoch']
 print(f"Resuming training from epoch {start_epoch}")
 
+# Verify that the model is on the correct device
+print(f"Model device: {next(model.parameters()).device}")
+
+# Set the epoch to resume training from
+start_epoch = checkpoint['epoch']
+print(f"Resuming training from epoch {start_epoch}")
+
+# Verify optimizer loading by printing state of one optimizer
+for name, optimizer in optimizers.items():
+    print(f"Optimizer: {name}, Loaded state dict keys: {optimizer.state_dict().keys()}")
+
+# Test forward pass with dummy data to check model functionality
+with torch.no_grad():  # Use no_grad to avoid affecting gradient computations
+    # Create dummy input tensors
+    dummy_cloth_image = torch.randn(1, 3, 256, 192).to(device)
+    dummy_body_image = torch.randn(1, 3, 256, 192).to(device)
+    dummy_pose_keypoints = torch.randn(1, 18, 2).to(device)
+
+    # Run a forward pass to check if the model runs without errors
+    final_output, warped_cloth, refined_cloth, segmentation_mask = model(dummy_cloth_image, dummy_body_image, body_keypoints=dummy_pose_keypoints)
+
+    print("Model forward pass successful.")
+
 # Continue training from the loaded state for more epochs (e.g., 10 more epochs)
-gmm, seg_net, comp_net, gmm_optimizer, seg_optimizer, comp_optimizer, final_total_loss = train_vton_and_save(
-    gmm, seg_net, comp_net, dataloader=train_loader, num_epochs=50, device=device, save_dir='./model_checkpoints'
+model, optimizers, final_total_loss = train_vton_and_save(
+    model,
+    dataloader=train_loader,
+    num_epochs=30,
+    device=device,
+    save_dir=save_dir,
+    start_epoch=start_epoch
 )
 
 print(f"Final total loss after training: {final_total_loss:.4f}")
 
-# Save model and optimizer state for resuming training later
-epoch = 150
-torch.save({
-    'epoch': epoch,
-    'gmm_state_dict': gmm.state_dict(),
-    'seg_net_state_dict': seg_net.state_dict(),
-    'comp_net_state_dict': comp_net.state_dict(),
-    'gmm_optimizer_state_dict': gmm_optimizer.state_dict(),
-    'seg_optimizer_state_dict': seg_optimizer.state_dict(),
-    'comp_optimizer_state_dict': comp_optimizer.state_dict(),
-    'loss': final_total_loss,
-}, os.path.join('./model_checkpoints', f'checkpoint_epoch_{epoch}.pth'))
+# Save the optimizer states for resuming training later
+checkpoint = {
+    'epoch': num_epochs,
+    'model_state_dict': model.state_dict(),
+    'optimizers_state_dict': {name: optimizer.state_dict() for name, optimizer in optimizers.items()},
+    'final_loss': final_total_loss,
+}
+
+# Save the checkpoint
+torch.save(checkpoint, os.path.join(save_dir, 'checkpoint.pth'))
+print(f"Checkpoint saved to {save_dir}/checkpoint.pth")
 
 # Check to see list of model checkpoints
 !ls model_checkpoints/
