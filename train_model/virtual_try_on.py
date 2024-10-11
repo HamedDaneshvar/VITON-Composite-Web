@@ -1077,10 +1077,11 @@ visualize_vton_results(model, test_loader, device=device, num_images=5, save_dir
 
 """## Test models for UI"""
 
-# Set models to evaluation mode
-gmm.eval()
-seg_net.eval()
-comp_net.eval()
+import torch
+from PIL import Image
+import matplotlib.pyplot as plt
+import torchvision.transforms as transforms
+import os
 
 # Image transformation for preprocessing input images
 transform = transforms.Compose([
@@ -1089,44 +1090,54 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
+# Load the model checkpoint
+save_dir = './model_checkpoints'
+checkpoint_file = 'checkpoint.pth'
 
-def process_images(body_image_pil, cloth_image_pil):
+# Instantiate the VirtualTryOnModel with use_keypoints set to False
+model = VirtualTryOnModel(use_keypoints=False).to(device)  # Set use_keypoints to False for inference
+
+# Load the checkpoint
+checkpoint = torch.load(os.path.join(save_dir, checkpoint_file), map_location=device)
+
+# Filter the state_dict to exclude keypoint predictor parameters if not using keypoints
+model_state_dict = model.state_dict()
+filtered_checkpoint = {k: v for k, v in checkpoint['model_state_dict'].items() if k in model_state_dict}
+
+# Load the model state, ignoring missing keys
+model.load_state_dict(filtered_checkpoint, strict=False)
+
+# Set the model to evaluation mode
+model.eval()
+
+def process_images(body_image_pil, cloth_image_pil, model):
     """
-    Process the body and cloth images using the loaded models to
+    Process the body and cloth images using the VirtualTryOnModel to
     produce a composite image.
     """
     # Preprocess input images
     body_image = transform(body_image_pil).unsqueeze(0).to(device)
     cloth_image = transform(cloth_image_pil).unsqueeze(0).to(device)
 
-    # Step 1: Warping the cloth using GMM
+    # Step: Passing the images through the model
     with torch.no_grad():
-        warped_cloth = gmm(body_image, cloth_image)
-
-    # Step 2: Generating the segmentation mask using SegNet
-    seg_input = torch.cat([body_image, warped_cloth], dim=1)
-    with torch.no_grad():
-        pred_mask = seg_net(seg_input)
-
-    # Step 3: Composing the final image using CompNet
-    with torch.no_grad():
-        composite_img = comp_net(body_image, warped_cloth, pred_mask)
+        # Forward pass without using keypoints
+        final_output, warped_cloth, refined_cloth, segmentation_mask = model(cloth_image, body_image)
 
     # Convert the output tensor to PIL image
-    composite_image = composite_img.squeeze(0).cpu().detach()
+    composite_image = final_output.squeeze(0).cpu().detach()
     composite_image_pil = transforms.ToPILImage()(composite_image)
 
     return composite_image_pil
 
-# Open images with PIL
-# Similar body and cloth images
+# Open images with PIL (test images)
 body_image_pil = Image.open('viton_resize/test/image/000020_0.jpg')
 cloth_image_pil = Image.open('viton_resize/test/cloth/000020_1.jpg')
 
-# Process the images
-processed_image = process_images(body_image_pil, cloth_image_pil)
+# Process the images using the virtual try-on model
+processed_image = process_images(body_image_pil, cloth_image_pil, model)
 
-# Show image
+# Display the processed image
 plt.imshow(processed_image)
 plt.axis("off")
 plt.show()
@@ -1137,7 +1148,7 @@ body_image_pil = Image.open('./viton_resize/test/image/000020_0.jpg')
 cloth_image_pil = Image.open('./viton_resize/test/cloth/000038_1.jpg')
 
 # Process the images
-processed_image = process_images(body_image_pil, cloth_image_pil)
+processed_image = process_images(body_image_pil, cloth_image_pil, model)
 
 # Show image
 plt.imshow(processed_image)
