@@ -4,11 +4,27 @@ This project aims to develop a Virtual Try-On system using deep learning models.
 
 ## Project Goals
 
-- **Objective**: The goal is to build a virtual try-on system that aligns a given clothing image onto a body image, producing a realistic composite image that shows how the clothing would look when worn.
-- **Models Used**:
-  1. **GMM (Geometric Matching Module)**: Warps the clothing image to align it with the body image using a Spatial Transformer Network (STN) with Thin-Plate Spline (TPS) transformation.
-  2. **SegNet (Segmentation Network)**: Generates a segmentation mask of the person to identify different regions like the upper body, arms, and legs, ensuring the clothing is correctly positioned.
-  3. **CompNet (Composition Network)**: Combines the warped clothing and the body image based on the segmentation mask to create the final composite image.
+- **Objective**: The goal of this project is to build a virtual try-on system that aligns a given clothing image onto a body image, producing a realistic composite image that shows how the clothing would look when worn. The system is designed to handle both training with pose keypoints and inference without keypoints, ensuring flexibility in different scenarios.
+
+### Models Used:
+
+1. **GMM (Geometric Matching Module)**:
+   - Warps the clothing image to align it with the body image using a Spatial Transformer Network (STN) with Thin-Plate Spline (TPS) transformation.
+   - During training, the model uses pose keypoints extracted from the dataset to warp the clothing image.
+   - During inference, the model can either predict the keypoints using a keypoint prediction network or skip the keypoint-based warping entirely.
+
+2. **SegNet (Segmentation Network)**:
+   - Generates a segmentation mask of the person to identify different regions like the upper body, arms, and legs. 
+   - The segmentation ensures that the clothing is placed correctly on the person, preserving occlusions and body regions for a realistic result.
+
+3. **CompNet (Composition Network)**:
+   - Combines the warped clothing and the body image based on the segmentation mask produced by SegNet to create the final composite image.
+   - The composition network takes into account the refined alignment of the clothing and the person's body structure to produce a seamless virtual try-on result.
+
+### Key Features of VITON Model:
+- **Training with Keypoints**: The model leverages pose keypoints during training to improve the accuracy of clothing alignment and warping.
+- **Keypoint Prediction for Inference**: In the absence of keypoints during inference, the model can predict keypoints or handle cases without them, providing robustness in real-world applications where pose annotations may not be available.
+- **Flexible Architecture**: The virtual try-on system can seamlessly switch between keypoint-based and non-keypoint-based modes, making it adaptable for both training and inference scenarios.
 
 ## Flask Web Application
 
@@ -69,7 +85,7 @@ If you need to train the models, you should first locate the **VITON_resize** da
 
 ### Training Details
 
-The models were trained for 150 epochs using the VITON dataset to achieve optimal results. The training process utilized all available data, ensuring high-quality outputs for the Virtual Try-On system.
+The models were trained for 1 epochs using the VITON dataset to achieve optimal results. The training process utilized all available data, ensuring high-quality outputs for the Virtual Try-On system.
 
 
 ### Advantage of Our Training Approach
@@ -103,7 +119,7 @@ By saving and reloading models, our approach enables a seamless workflow for ite
 
 1. **Download Pre-Trained Models**: To run the web application, you need the pre-trained models. Download the models from the Google Drive link below, unzip them, and place them in the `web_app` directory:
 
-   - **Google Drive Link for Pre-trained Models**: [Download Models](https://drive.google.com/file/d/1BF4pEZeorm0yfKC_rFeukByvBidm1w27/view?usp=sharing)
+   - **Google Drive Link for Pre-trained Models**: [Download Models](/)
 
 2. **Run the Flask App**: Navigate to the `web_app` directory and start the Flask application:
 
